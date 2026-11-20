@@ -1,0 +1,106 @@
+package com.example.myapplication.ui.home
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.example.myapplication.data.preferences.UserPreferencesRepository
+import com.example.myapplication.data.repository.StudentRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+
+@OptIn(FlowPreview::class)
+class HomeViewModel(
+    private val repository: StudentRepository,
+    private val preferencesRepository: UserPreferencesRepository
+) : ViewModel() {
+    private val _uiState = MutableStateFlow(HomeUiState())
+    val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            _searchQuery.value = preferencesRepository.lastSearchQuery.first()
+        }
+
+        observeSearch()
+
+        viewModelScope.launch {
+            searchQuery
+                .debounce(500)
+                .distinctUntilChanged()
+                .collectLatest { value ->
+                    preferencesRepository.saveLastSearchQuery(value)
+                }
+        }
+    }
+
+    fun onSearchQueryChange(query: String) {
+        _searchQuery.value = query
+    }
+
+    private fun observeSearch() {
+        viewModelScope.launch {
+            searchQuery
+                .debounce(500)
+                .distinctUntilChanged()
+                .collectLatest { query ->
+                    loadData(query)
+                }
+        }
+    }
+
+    fun refresh() {
+        val query = searchQuery.value
+        viewModelScope.launch {
+            loadData(query)
+        }
+    }
+
+    fun retry() {
+        refresh()
+    }
+
+    private suspend fun loadData(query: String) {
+        _uiState.value = _uiState.value.copy(
+            isLoading = true,
+            errorMessage = null
+        )
+        try {
+            val data = if (query.isBlank()) {
+                repository.getStudents()
+            } else {
+                repository.searchStudents(query)
+            }
+            _uiState.value = HomeUiState(students = data)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _uiState.value = HomeUiState(
+                errorMessage = e.message ?: "Gagal mengambil data"
+            )
+        }
+    }
+
+    companion object {
+        fun factory(
+            repository: StudentRepository,
+            preferencesRepository: UserPreferencesRepository
+        ): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    return HomeViewModel(repository, preferencesRepository) as T
+                }
+            }
+    }
+}
